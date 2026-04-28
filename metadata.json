@@ -1,0 +1,12 @@
+{
+  "name": "SurveyGo",
+  "description": "On-demand digital survey service platform connecting clients with verified professional surveyors for land mapping, property inspection, and more.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "Real-time Tracking",
+    "Digital Report Uploads",
+    "Automated Price Estimation"
+  ]
+}

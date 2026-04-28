@@ -1,0 +1,101 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Represents a user in the system (Client, Surveyor, or Admin)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["client", "surveyor", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "isOnline": { "type": "boolean" },
+        "surveyInterest": { "type": "string" },
+        "onboardingCompleted": { "type": "boolean" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "System notification for a user",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "orderId": { "type": "string" }
+      }
+    },
+    "Order": {
+      "title": "Order",
+      "description": "A survey request created by a client",
+      "type": "object",
+      "properties": {
+        "clientId": { "type": "string" },
+        "surveyorId": { "type": "string" },
+        "surveyTypeId": { "type": "string" },
+        "status": { 
+          "type": "string", 
+          "enum": ["pending", "assigned", "on_site", "completed", "cancelled"] 
+        },
+        "location": {
+          "type": "object",
+          "properties": {
+            "address": { "type": "string" },
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "area": { "type": "number" },
+        "complexity": { "type": "number" },
+        "price": { "type": "number" },
+        "rating": { "type": "number" },
+        "review": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "reportUrl": { "type": "string" }
+      },
+      "required": ["clientId", "surveyTypeId", "status", "price"]
+    },
+    "SurveyType": {
+      "title": "Survey Type",
+      "description": "Definitions of available survey services",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "basePrice": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Profile data for each user"
+    },
+    "/surveyorProfiles/{userId}": {
+      "schema": "SurveyorProfile",
+      "description": "Verification and professional data for surveyors"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Survey jobs history and active requests"
+    },
+    "/surveyTypes/{typeId}": {
+      "schema": "SurveyType",
+      "description": "Catalog of services"
+    },
+    "/users/{userId}/notifications/{notifId}": {
+      "schema": "Notification",
+      "description": "User notifications"
+    },
+    "/surveyorProfiles/{userId}": {
+      "schema": "SurveyorProfile",
+      "description": "Verification and professional data for surveyors"
+    }
+  }
+}

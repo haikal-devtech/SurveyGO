@@ -1,0 +1,207 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      // Identity check against persistent store
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // --- Entitiy Validations ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt', 'status', 'isOnline'])
+        && data.uid == request.auth.uid
+        && data.email is string && data.email.size() > 0
+        && data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 128
+        && data.role in ['client', 'surveyor', 'admin']
+        && data.status in ['active', 'suspended']
+        && data.isOnline is bool
+        && (data.surveyInterest is string || !data.keys().hasAny(['surveyInterest']))
+        && (data.onboardingCompleted is bool || !data.keys().hasAny(['onboardingCompleted']));
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['clientId', 'surveyTypeId', 'status', 'price', 'location', 'createdAt', 'updatedAt'])
+        && data.clientId is string && isValidId(data.clientId)
+        && data.surveyTypeId is string
+        && data.status in ['pending', 'assigned', 'on_site', 'completed', 'cancelled']
+        && data.price is number && data.price >= 0
+        && data.location is map
+        && (data.surveyorId is string || !data.keys().hasAny(['surveyorId']))
+        && (data.area is number || !data.keys().hasAny(['area']))
+        && (data.notes is string || !data.keys().hasAny(['notes']))
+        && (data.referenceImages is list || !data.keys().hasAny(['referenceImages']))
+        && (data.reportUrl is string || !data.keys().hasAny(['reportUrl']))
+        && (data.rating is number || !data.keys().hasAny(['rating']))
+        && (data.review is string || !data.keys().hasAny(['review']));
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['senderId', 'text', 'createdAt', 'orderId'])
+        && data.senderId == request.auth.uid
+        && data.text is string && data.text.size() > 0 && data.text.size() <= 5000
+        && data.orderId is string;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['title', 'message', 'type', 'read', 'createdAt'])
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 128
+        && data.message is string && data.message.size() > 0 && data.message.size() <= 1024
+        && data.type is string
+        && data.read is bool
+        && (data.orderId is string || !data.keys().hasAny(['orderId']));
+    }
+
+    // --- Collections ---
+
+    // Users
+    match /users/{userId} {
+      allow get: if isSignedIn() && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && (
+        isAdmin() || 
+        resource.data.role == 'surveyor'
+      );
+      
+      allow create: if isVerified() && isOwner(userId) && isValidId(userId) && isValidUser(incoming()) && incoming().createdAt == request.time;
+      
+      allow update: if isVerified() && (isOwner(userId) || isAdmin()) && (
+        isAdmin() || (
+          isOwner(userId) && (
+            // Identity fields are immutable
+            incoming().uid == existing().uid &&
+            incoming().role == existing().role &&
+            incoming().email == existing().email &&
+            incoming().createdAt == existing().createdAt &&
+            // Action based updates
+            (
+              (incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'isOnline', 'surveyInterest', 'onboardingCompleted'])) ||
+              (incoming().diff(existing()).affectedKeys().hasOnly(['status']) && incoming().status == 'suspended')
+            )
+          )
+        )
+      );
+
+      // Notifications
+      match /notifications/{notifId} {
+        allow read: if isOwner(userId);
+        allow create: if isSignedIn() && isValidNotification(incoming()) && incoming().createdAt == request.time;
+        allow update: if isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      }
+    }
+
+    // Surveyor Profiles
+    match /surveyorProfiles/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isVerified() && isOwner(userId) && isValidId(userId);
+      allow update: if isAdmin();
+    }
+
+    // Orders
+    match /orders/{orderId} {
+      allow get: if isSignedIn() && (
+        request.auth.uid == existing().clientId || 
+        request.auth.uid == existing().surveyorId || 
+        (existing().status == 'pending' && isAdmin() == false)
+        || isAdmin()
+      );
+      
+      // Pillar 8: Secure List Queries
+      allow list: if isSignedIn() && (
+        resource.data.clientId == request.auth.uid || 
+        resource.data.surveyorId == request.auth.uid || 
+        resource.data.status == 'pending' ||
+        isAdmin()
+      );
+
+      allow create: if isVerified() && isValidOrder(incoming()) && 
+                    incoming().clientId == request.auth.uid && 
+                    incoming().status == 'pending' &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+
+      allow update: if isVerified() && isValidOrder(incoming()) && (
+        isAdmin() || (
+          // Immutable identity
+          incoming().clientId == existing().clientId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            // Client actions: Only if they own it
+            (request.auth.uid == existing().clientId && (
+              // Cancel
+              (incoming().status == 'cancelled' && existing().status in ['pending', 'assigned'] && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+              // Rate
+              (existing().status == 'completed' && incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'review', 'updatedAt']))
+            )) ||
+            // Surveyor actions
+            (
+              // Join (assign to self)
+              (existing().status == 'pending' && incoming().status == 'assigned' && incoming().surveyorId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'surveyorId', 'updatedAt'])) ||
+              // Progress
+              (existing().surveyorId == request.auth.uid && incoming().status in ['on_site', 'completed'] && 
+               (
+                 (incoming().status == 'on_site' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+                 (incoming().status == 'completed' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'reportUrl']))
+               )
+              )
+            )
+          )
+        )
+      );
+
+      // Messages (Subcollection)
+      match /messages/{messageId} {
+        allow list: if isSignedIn() && (
+          get(/databases/$(database)/documents/orders/$(orderId)).data.clientId == request.auth.uid ||
+          get(/databases/$(database)/documents/orders/$(orderId)).data.surveyorId == request.auth.uid ||
+          isAdmin()
+        );
+        allow get: if isSignedIn() && (
+          get(/databases/$(database)/documents/orders/$(orderId)).data.clientId == request.auth.uid ||
+          get(/databases/$(database)/documents/orders/$(orderId)).data.surveyorId == request.auth.uid ||
+          isAdmin()
+        );
+        allow create: if isVerified() && isValidMessage(incoming()) && (
+          get(/databases/$(database)/documents/orders/$(orderId)).data.clientId == request.auth.uid ||
+          get(/databases/$(database)/documents/orders/$(orderId)).data.surveyorId == request.auth.uid
+        );
+      }
+    }
+
+    // Survey Types
+    match /surveyTypes/{typeId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}
